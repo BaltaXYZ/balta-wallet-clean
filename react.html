@@ -130,10 +130,9 @@
             alert("Fyll i datum, person, kort, kategori och belopp."); return;
           }
           await apiPost({ date, person, card, category, amountCents: cents, note: note || null });
-          setJustSaved(true); setAmount(""); setNote("");
-          setTimeout(()=>setJustSaved(false), 1500);
-          setTick(x=>x+1);
-          setPage("list");
+setJustSaved(true); setAmount(""); setNote("");
+setTimeout(()=>setJustSaved(false), 1500);
+setTick(x=>x+1); // stanna kvar på "Lägg till"
         }
 
         // list helpers
