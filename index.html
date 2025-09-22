@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="sv">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Balta Wallet – Minimal UI</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; }
+    form, .card { border: 1px solid #ddd; border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
+    input, select { padding: .5rem; margin: .25rem 0 .75rem; width: 100%; }
+    button { padding: .6rem 1rem; border-radius: 8px; border: none; background: #111827; color: white; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #eee; padding: .5rem; text-align: left; }
+    .ok { color: #059669; } .err { color: #dc2626; }
+  </style>
+  <body>
+    <h1>Balta Wallet – Minimal UI</h1>
+
+    <div class="card">
+      <h2>Status</h2>
+      <div id="status">Kontrollerar…</div>
+    </div>
+
+    <div class="card">
+      <h2>Ny transaktion</h2>
+      <form id="f">
+        <label>Datum <input type="date" name="date" required /></label>
+        <label>Person <input name="person" placeholder="Anna" required /></label>
+        <label>Kort <input name="card" placeholder="Visa" required /></label>
+        <label>Kategori <input name="category" placeholder="Food" required /></label>
+        <label>Belopp (SEK) <input type="number" step="0.01" name="amount" placeholder="123.45" required /></label>
+        <label>Notering <input name="note" placeholder="Lunch" /></label>
+        <button>Spara</button>
+      </form>
+      <div id="postMsg"></div>
+    </div>
+
+    <div class="card">
+      <h2>Transaktioner</h2>
+      <table>
+        <thead><tr><th>Datum</th><th>Person</th><th>Kort</th><th>Kategori</th><th>Belopp</th><th>Not</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+
+    <script>
+      const api = "/api/transactions";
+
+      async function refresh() {
+        const s = document.getElementById("status");
+        try {
+          const r = await fetch(api, { cache: "no-store" });
+          if (!r.ok) throw new Error("GET " + r.status);
+          const data = await r.json();
+          s.innerHTML = `<span class="ok">API OK</span> – ${Array.isArray(data) ? data.length : 0} poster`;
+          const tb = document.getElementById("rows");
+          tb.innerHTML = (data||[]).map(x => `
+            <tr>
+              <td>${x.date ?? ""}</td>
+              <td>${x.person ?? ""}</td>
+              <td>${x.card ?? ""}</td>
+              <td>${x.category ?? ""}</td>
+              <td>${(x.amountCents/100).toFixed(2)}</td>
+              <td>${x.note ?? ""}</td>
+            </tr>`).join("");
+        } catch (e) {
+          s.innerHTML = `<span class="err">API FEL:</span> ${e.message}`;
+        }
+      }
+
+      document.getElementById("f").addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const fd = new FormData(ev.target);
+        const payload = {
+          date: fd.get("date"),
+          person: fd.get("person"),
+          card: fd.get("card"),
+          category: fd.get("category"),
+          amountCents: Math.round(parseFloat(fd.get("amount")) * 100),
+          note: fd.get("note") || null
+        };
+        const msg = document.getElementById("postMsg");
+        try {
+          const r = await fetch(api, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || r.status);
+          msg.innerHTML = `<span class="ok">Skapad:</span> ${j.id}`;
+          ev.target.reset();
+          await refresh();
+        } catch (e) {
+          msg.innerHTML = `<span class="err">Fel:</span> ${e.message}`;
+        }
+      });
+
+      refresh();
+    </script>
+  </body>
+</html>
