@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="sv">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Kassabok (React + Neon)</title>
+  <link rel="preconnect" href="https://unpkg.com">
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:#0f172a; color:#e2e8f0; margin:0 }
+    .wrap{max-width:720px;margin:0 auto;padding:24px}
+    .card{background:#0f172a;border:1px solid #1f2937;border-radius:16px;padding:16px;margin:12px 0}
+    .btn{border:1px solid #334155;border-radius:12px;padding:.5rem .75rem;background:#0b1220;color:#e2e8f0}
+    .btn[aria-pressed="true"]{background:#0ea5e9;border-color:#0284c7;color:#fff}
+    input,select,textarea{width:100%;background:#0f172a;border:1px solid #334155;border-radius:12px;color:#e2e8f0;padding:.5rem}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:.5rem;border-bottom:1px solid #1f2937}
+    .ok{color:#34d399}.err{color:#f87171}
+  </style>
+  <body>
+    <div id="root" class="wrap"></div>
+
+    <script type="text/babel">
+      const { useState, useEffect, useMemo } = React;
+      const API = "/api/transactions";
+
+      // --- API helpers (ersätter localStorage) ---
+      async function apiGet() {
+        const r = await fetch(API, { cache: "no-store" });
+        if (!r.ok) throw new Error("GET " + r.status);
+        return r.json();
+      }
+      async function apiPost(tx) {
+        const r = await fetch(API, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(tx),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.status);
+        return j;
+      }
+      async function apiPut(tx) {
+        const r = await fetch(API, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(tx),
+        });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.status);
+        return j;
+      }
+      async function apiDelete(id) {
+        const r = await fetch(API + "?id=" + encodeURIComponent(id), { method: "DELETE" });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.status);
+        return j;
+      }
+
+      // --- format helpers ---
+      const iso = (d) => new Date(d).toISOString().slice(0,10);
+      function parseAmountToCents(v) {
+        if (!v || !v.trim()) return null;
+        const n = Number(String(v).replace(",", "."));
+        if (!isFinite(n)) return null;
+        return Math.round(n * 100);
+      }
+      const formatKr = (c) => (c/100).toLocaleString("sv-SE",{minimumFractionDigits:2,maximumFractionDigits:2});
+
+      function App() {
+        // routing
+        const [page, setPage] = useState("add"); // add | list | edit
+        const [editId, setEditId] = useState(null);
+        const [tick, setTick] = useState(0);
+
+        // filters (som i mockup)
+        const now = new Date();
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const monthEnd = new Date(now.getFullYear(), now.getMonth()+1, 0);
+        const [filters, setFilters] = useState({
+          nameFilter: "Alla",
+          cardFilter: "Båda",
+          fromDate: iso(monthStart),
+          toDate: iso(monthEnd),
+          monthChoice: "",
+          categoryFilter: "Alla",
+        });
+
+        // add form
+        const [date, setDate] = useState(iso(new Date()));
+        const [person, setPerson] = useState("Camilla");
+        const [card, setCard] = useState("SAS Mastercard");
+        const [amount, setAmount] = useState("");
+        const [note, setNote] = useState("");
+        const [category, setCategory] = useState("");
+        const [justSaved, setJustSaved] = useState(false);
+
+        const personalCategories = {
+          standard:["Bostad","Mat","Transport","Hälsa","Försäkringar","Abonnemang"],
+          ovrigt:["Nöje","Kläder","Gåvor","Hobby","Annat"],
+        };
+        const sharedCategories = ["Resor","Presenter","Övrigt","Renoveringar","Mat i utsatt läge"];
+        const klackenCategories = ["Mat","Bensin","Apotek","Systembolag","Övrigt"];
+
+        const categories = useMemo(() => {
+          if (person === "Remember/Klarna") return { grouped:false, items: sharedCategories };
+          if (person === "Gemensamma klacken") return { grouped:false, items: klackenCategories };
+          return { grouped:true, groups:[
+            {label:"Standardutgifter", items: personalCategories.standard},
+            {label:"Övriga utgifter", items: personalCategories.ovrigt},
+          ]};
+        }, [person]);
+
+        // data
+        const [items, setItems] = useState([]);
+        async function refresh() {
+          const list = await apiGet();
+          setItems(list.sort((a,b)=>a.date < b.date ? 1 : -1));
+        }
+        useEffect(()=>{ refresh(); }, [tick]);
+
+        // add submit
+        async function onSubmit(e){
+          e.preventDefault();
+          const cents = parseAmountToCents(amount);
+          if (!date || !person || !category || cents === null || !card) {
+            alert("Fyll i datum, person, kort, kategori och belopp."); return;
+          }
+          await apiPost({ date, person, card, category, amountCents: cents, note: note || null });
+          setJustSaved(true); setAmount(""); setNote("");
+          setTimeout(()=>setJustSaved(false), 1500);
+          setTick(x=>x+1);
+          setPage("list");
+        }
+
+        // list view helpers
+        const monthOptions = useMemo(()=>{
+          const set = new Set(items.map(t => String(t.date).slice(0,7)));
+          return Array.from(set).filter(Boolean).sort().reverse();
+        },[items]);
+
+        useEffect(()=>{
+          if (!filters.monthChoice) return;
+          const [y,m] = filters.monthChoice.split("-").map(Number);
+          const s = new Date(y, m-1, 1);
+          const e = new Date(y, m, 0);
+          setFilters({ ...filters, fromDate: iso(s), toDate: iso(e) });
+          // eslint-disable-next-line
+        },[filters.monthChoice]);
+
+        const categoryOptions = useMemo(()=>{
+          if (filters.nameFilter === "Remember/Klarna") return ["Alla", ...sharedCategories];
+          if (filters.nameFilter === "Gemensamma klacken") return ["Alla", ...klackenCategories];
+          if (filters.nameFilter === "Camilla" || filters.nameFilter === "Kristian")
+            return ["Alla", ...personalCategories.standard, ...personalCategories.ovrigt];
+          const set = new Set(items.map(t => t.category));
+          return ["Alla", ...Array.from(set).sort()];
+        },[filters.nameFilter, items]);
+
+        useEffect(()=>{
+          if (!categoryOptions.includes(filters.categoryFilter))
+            setFilters({ ...filters, categoryFilter: "Alla" });
+          // eslint-disable-next-line
+        },[categoryOptions]);
+
+        const filtered = useMemo(()=>{
+          return items.filter(t=>{
+            if (filters.nameFilter !== "Alla" && t.person !== filters.nameFilter) return false;
+            if (filters.cardFilter !== "Båda" && t.card !== filters.cardFilter) return false;
+            if (filters.categoryFilter !== "Alla" && t.category !== filters.categoryFilter) return false;
+            if (filters.fromDate && t.date < filters.fromDate) return false;
+            if (filters.toDate && t.date > filters.toDate) return false;
+            return true;
+          });
+        },[items, filters]);
+
+        const totalCents = useMemo(()=>filtered.reduce((s,t)=>s+(t.amountCents||0),0),[filtered]);
+
+        // edit support
+        const [editTx, setEditTx] = useState(null);
+        useEffect(()=>{
+          if (page !== "edit") return;
+          const tx = items.find(x=>x.id===editId) || null;
+          setEditTx(tx);
+        },[page, editId, items]);
+
+        async function onSaveEdit(e){
+          e.preventDefault();
+          const cents = parseAmountToCents(editTx._amountStr);
+          if (!editTx.date || !editTx.person || !editTx.category || cents===null || !editTx.card) {
+            alert("Fyll i datum, person, kort, kategori och belopp."); return;
+          }
+          await apiPut({ ...editTx, amountCents: cents });
+          setPage("list"); setTick(x=>x+1);
+        }
+        async function onDelete(){
+          await apiDelete(editId);
+          setPage("list"); setTick(x=>x+1);
+        }
+
+        return (
+          <div>
+            <header className="card" style={{position:"sticky",top:0,backdropFilter:"blur(6px)",background:"#0f172acc"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <h1 style={{fontSize:"20px",fontWeight:700}}>Kassabok</h1>
+                <span style={{fontSize:"12px",color:"#94a3b8"}}>Neon • API-driven</span>
+              </div>
+              <nav style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginTop:"10px"}}>
+                <button className="btn" aria-pressed={page==="add"} onClick={()=>setPage("add")}>Lägg till</button>
+                <button className="btn" aria-pressed={page==="list"} onClick={()=>setPage("list")}>Se transaktioner</button>
+              </nav>
+            </header>
+
+            <main>
+              {page==="add" && (
+                <div className="card">
+                  <h2 style={{marginTop:0}}>Ny transaktion</h2>
+                  {justSaved && <div className="ok" style={{marginBottom:"8px"}}>Sparat!</div>}
+                  <form onSubmit={onSubmit} className="space-y-3">
+                    <div>
+                      <div style={{marginBottom:6}}>Kort</div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
+                        {["SAS Mastercard","AMEX SAS"].map(k=>(
+                          <button key={k} type="button" className="btn"
+                            aria-pressed={card===k} onClick={()=>setCard(k)}>{k}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={{marginBottom:6}}>Person</div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"8px"}}>
+                        {["Camilla","Kristian","Remember/Klarna","Gemensamma klacken"].map(p=>(
+                          <button key={p} type="button" className="btn"
+                            aria-pressed={person===p} onClick={()=>{setPerson(p); setCategory("");}}>
+                            {p}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <label>Datum
+                      <input type="date" value={date} onChange={e=>setDate(e.target.value)} />
+                    </label>
+
+                    <label>Belopp (SEK)
+                      <input inputMode="decimal" placeholder="t.ex. 199,00"
+                             value={amount} onChange={e=>setAmount(e.target.value)} required />
+                    </label>
+
+                    <label>Kategori
+                      <select value={category} onChange={e=>setCategory(e.target.value)} required>
+                        <option value="" disabled>Välj kategori…</option>
+                        {categories.grouped ? (
+                          (categories.groups||[]).map(g=>(
+                            <optgroup key={g.label} label={g.label}>
+                              {g.items.map(it=><option key={it} value={it}>{it}</option>)}
+                            </optgroup>
+                          ))
+                        ) : (
+                          (categories.items||[]).map(it=><option key={it} value={it}>{it}</option>)
+                        )}
+                      </select>
+                    </label>
+
+                    <label>Anteckning
+                      <textarea rows="3" value={note} onChange={e=>setNote(e.target.value)} />
+                    </label>
+
+                    <button className="btn" style={{background:"#14b8a6",borderColor:"#0d9488",color:"#fff"}}>Spara transaktion</button>
+                  </form>
+                </div>
+              )}
+
+              {page==="list" && (
+                <div className="card">
+                  <h2 style={{marginTop:0}}>Transaktioner</h2>
+
+                  <div className="card" style="display:flex;justify-content:space-between;align-items:center">
+                    <div>Summa ({filtered.length})</div>
+                    <div style="font-weight:800">{formatKr(totalCents)} kr</div>
+                  </div>
+
+                  <div className="card">
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
+                      <label>Namn
+                        <select value={filters.nameFilter} onChange={e=>setFilters({...filters, nameFilter:e.target.value})}>
+                          {["Alla","Camilla","Kristian","Remember/Klarna","Gemensamma klacken"].map(n=>
+                            <option key={n} value={n}>{n}</option>
+                          )}
+                        </select>
+                      </label>
+                      <div>
+                        <div style={{marginBottom:6}}>Kort</div>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"8px"}}>
+                          {["Båda","SAS Mastercard","AMEX SAS"].map(k=>(
+                            <button key={k} type="button" className="btn"
+                              aria-pressed={filters.cardFilter===k}
+                              onClick={()=>setFilters({...filters, cardFilter:k})}>{k}</button>
+                          ))}
+                        </div>
+                      </div>
+                      <label>Från datum
+                        <input type="date" value={filters.fromDate} onChange={e=>setFilters({...filters, fromDate:e.target.value})}/>
+                      </label>
+                      <label>Till datum
+                        <input type="date" value={filters.toDate} onChange={e=>setFilters({...filters, toDate:e.target.value})}/>
+                      </label>
+                      <label>Välj månad
+                        <select value={filters.monthChoice} onChange={e=>setFilters({...filters, monthChoice:e.target.value})}>
+                          <option value="">—</option>
+                          {monthOptions.map(ym=><option key={ym} value={ym}>{ym}</option>)}
+                        </select>
+                      </label>
+                      <label>Kategori
+                        <select value={filters.categoryFilter} onChange={e=>setFilters({...filters, categoryFilter:e.target.value})}>
+                          {(["Alla", ...categoryOptions]).map(c=><option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+
+                  {filtered.length===0 ? (
+                    <p style={{color:"#94a3b8"}}>Inga transaktioner för valda filter.</p>
+                  ) : (
+                    <table>
+                      <thead><tr>
+                        <th>Datum</th><th>Person</th><th>Kort</th><th>Kategori</th><th>Belopp</th><th>Not</th><th></th>
+                      </tr></thead>
+                      <tbody>
+                        {filtered.map(t=>(
+                          <tr key={t.id}>
+                            <td>{t.date}</td><td>{t.person}</td><td>{t.card||"—"}</td>
+                            <td>{t.category}</td><td>{formatKr(t.amountCents)} kr</td><td>{t.note||""}</td>
+                            <td><button className="btn" onClick={()=>{setEditId(t.id); setPage("edit");}}>Ändra</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {page==="edit" && editTx && (
+                <div className="card">
+                  <h2 style={{marginTop:0}}>Ändra transaktion</h2>
+                  <form onSubmit={onSaveEdit} className="space-y-3">
+                    <label>Datum <input type="date" value={editTx.date} onChange={e=>setEditTx({...editTx, date:e.target.value})} /></label>
+                    <label>Person
+                      <select value={editTx.person} onChange={e=>setEditTx({...editTx, person:e.target.value})}>
+                        {["Camilla","Kristian","Remember/Klarna","Gemensamma klacken"].map(p=>
+                          <option key={p} value={p}>{p}</option>
+                        )}
+                      </select>
+                    </label>
+                    <label>Kort
+                      <select value={editTx.card||""} onChange={e=>setEditTx({...editTx, card:e.target.value})}>
+                        {["SAS Mastercard","AMEX SAS"].map(k=><option key={k} value={k}>{k}</option>)}
+                      </select>
+                    </label>
+                    <label>Kategori
+                      <input value={editTx.category} onChange={e=>setEditTx({...editTx, category:e.target.value})}/>
+                    </label>
+                    <label>Belopp (SEK)
+                      <input inputMode="decimal" value={editTx._amountStr ?? (editTx.amountCents/100).toString().replace(".",",")}
+                             onChange={e=>setEditTx({...editTx, _amountStr:e.target.value})}/>
+                    </label>
+                    <label>Anteckning <textarea rows="3" value={editTx.note||""} onChange={e=>setEditTx({...editTx, note:e.target.value})}/></label>
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                      <button className="btn" style="background:#14b8a6;border-color:#0d9488;color:#fff">Spara</button>
+                      <button type="button" className="btn" onClick={()=>setPage("list")}>Avbryt</button>
+                      <button type="button" className="btn" style="border-color:#b91c1c;color:#fecaca"
+                              onClick={onDelete}>Ta bort</button>
+                    </div>
+                  </form>
+                </div>
+              )}
+            </main>
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
