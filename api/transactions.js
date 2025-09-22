@@ -4,15 +4,17 @@ const { Pool } = require("pg");
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
-  throw new Error("Missing DATABASE_URL");
+  module.exports = (_req, res) => res.status(500).json({ error: "Missing DATABASE_URL" });
+  return;
 }
 
+// Återanvänd pool mellan invokationer
 let pool;
 function getPool() {
   if (!pool) {
     pool = new Pool({
       connectionString,
-      ssl: { rejectUnauthorized: false }, // Neon kör SSL
+      ssl: { rejectUnauthorized: false }, // Neon kräver SSL
     });
   }
   return pool;
@@ -26,6 +28,7 @@ function sendJson(res, data, status = 200) {
 
 module.exports = async function handler(req, res) {
   const db = getPool();
+
   try {
     if (req.method === "GET") {
       const r = await db.query(`
@@ -75,7 +78,7 @@ module.exports = async function handler(req, res) {
     }
 
     if (req.method === "DELETE") {
-      const id = (req.query && req.query.id) || (req.body && req.body.id);
+      const id = req.query?.id;
       if (!id) return sendJson(res, { error: "Missing id" }, 400);
       await db.query(`delete from transactions where id=$1`, [id]);
       return sendJson(res, { ok: true }, 200);
