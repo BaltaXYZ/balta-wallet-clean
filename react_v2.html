@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="sv">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Kassabok (React + Neon)</title>
+  <link rel="preconnect" href="https://unpkg.com">
+  <!-- React 18 UMD -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel Standalone for JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    :root{--bg:#0f172a;--panel:#0f172a;--border:#1f2937;--text:#e2e8f0;--muted:#94a3b8;--btnbg:#0b1220;--btnbor:#334155;--accent:#0ea5e9;--accent2:#14b8a6}
+    *{box-sizing:border-box}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);margin:0}
+    .wrap{max-width:720px;margin:0 auto;padding:24px}
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:16px;margin:12px 0}
+    .btn{border:1px solid var(--btnbor);border-radius:12px;padding:.5rem .75rem;background:var(--btnbg);color:var(--text);cursor:pointer}
+    .btn[aria-pressed="true"], .btn.primary{background:var(--accent);border-color:#0284c7;color:#fff}
+    input,select,textarea{width:100%;background:var(--panel);border:1px solid var(--btnbor);border-radius:12px;color:var(--text);padding:.5rem}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:.5rem;border-bottom:1px solid var(--border)}
+    .ok{color:#34d399}.err{color:#f87171}
+    /* Ökat vertikalt avstånd i formulär (Lägg till) */
+    .card form > div{margin:16px 0 20px}
+    .card form label{display:block;margin:16px 0 20px}
+    .card form input,.card form select,.card form textarea{margin-top:6px}
+    /* Ökat vertikalt avstånd på transaktionssidans filter */
+    .filters .row{margin:16px 0 20px}
+    .filters label{display:block}
+    .banner{border:1px solid #f59e0b;background:#1f2937;color:#fde68a;border-radius:12px;padding:10px}
+  </style>
+  <body>
+    <div id="root" class="wrap"></div>
+
+    <script type="text/babel" data-presets="env,react">
+      const { useState, useEffect, useMemo } = React;
+
+      // =====================
+      //  API (ENDAST backend)
+      // =====================
+      const API = "/api/transactions"; // ingen mock, endast servern
+
+      async function apiGet(){
+        const r = await fetch(API, { cache: "no-store" });
+        if (!r.ok) throw new Error("GET " + r.status);
+        return r.json();
+      }
+      async function apiPost(tx){
+        const r = await fetch(API, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.status);
+        return j;
+      }
+      async function apiPut(tx){
+        const r = await fetch(API, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(tx) });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.status);
+        return j;
+      }
+      async function apiDelete(id){
+        const r = await fetch(API + "?id=" + encodeURIComponent(id), { method: "DELETE" });
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || r.status);
+        return j;
+      }
+
+      // =====================
+      //  Hjälpare
+      // =====================
+      const ALL_NAMES = ["Camilla","Kristian","Remember/Klarna","Gemensamma klacken"];
+      const iso = (d) => new Date(d).toISOString().slice(0,10);
+      const normalize = (tx) => ({ ...tx, date: String(tx.date).slice(0,10) });
+      function parseAmountToCents(v){ if(!v||!v.trim()) return null; const n=Number(String(v).replace(",",".")); if(!isFinite(n)) return null; return Math.round(n*100); }
+      const formatKr = (c) => (c/100).toLocaleString("sv-SE",{minimumFractionDigits:2,maximumFractionDigits:2});
+
+      // --- Mini-testfall (körs i konsolen) ---
+      (function tests(){
+        console.assert(parseAmountToCents("199,50")===19950, "parseAmountToCents borde ge 19950");
+        console.assert(formatKr(12345)==="123,45", "formatKr borde ge 123,45");
+      })();
+
+      function App(){
+        // routing/state
+        const [page, setPage] = useState("add"); // add | list | edit
+        const [editId, setEditId] = useState(null);
+        const [tick, setTick] = useState(0);
+        const [errorMsg, setErrorMsg] = useState("");
+
+        // filters
+        const now = new Date();
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const monthEnd = new Date(now.getFullYear(), now.getMonth()+1, 0);
+        const [filters, setFilters] = useState({
+          selectedNames: ALL_NAMES.slice(),
+          cardFilter: "Båda",
+          fromDate: iso(monthStart),
+          toDate: iso(monthEnd),
+          monthChoice: "",
+          categoryFilter: "Alla",
+        });
+
+        // add form
+        const [date, setDate] = useState(iso(new Date()));
+        const [person, setPerson] = useState("Camilla");
+        const [card, setCard] = useState("SAS Mastercard");
+        const [amount, setAmount] = useState("");
+        const [note, setNote] = useState("");
+        const [category, setCategory] = useState("");
+        const [justSaved, setJustSaved] = useState(false);
+
+        // kategorier enligt tidigare specifikation
+        const personalCategories = {
+          standard:["Bostad","Mat","Transport","Hälsa","Försäkringar","Abonnemang"],
+          ovrigt:["Nöje","Kläder","Gåvor","Hobby","Annat"],
+        };
+        const sharedCategories = ["Resor","Presenter","Övrigt","Renoveringar","Mat i utsatt läge"];
+        const klackenCategories = ["Mat","Bensin","Apotek","Systembolag","Övrigt"];
+
+        const categories = useMemo(() => {
+          if (person === "Remember/Klarna") return { grouped:false, items: sharedCategories };
+          if (person === "Gemensamma klacken") return { grouped:false, items: klackenCategories };
+          return { grouped:true, groups:[
+            {label:"Standardutgifter", items: personalCategories.standard},
+            {label:"Övriga utgifter", items: personalCategories.ovrigt},
+          ]};
+        }, [person]);
+
+        // data
+        const [items, setItems] = useState([]);
+        async function refresh(){
+          try{
+            setErrorMsg("");
+            const list=(await apiGet()).map(normalize).sort((a,b)=>a.date<b.date?1:-1);
+            setItems(list);
+          }catch(e){ setErrorMsg("Kunde inte hämta data ("+e.message+")"); }
+        }
+        useEffect(()=>{ refresh(); }, [tick]);
+
+        // add submit (stannar kvar på "Lägg till")
+        async function onSubmit(e){
+          e.preventDefault();
+          const cents = parseAmountToCents(amount);
+          if (!date || !person || !category || cents === null || !card) {
+            alert("Fyll i datum, person, kort, kategori och belopp."); return;
+          }
+          try{
+            await apiPost({ date, person, card, category, amountCents: cents, note: note || null });
+            setJustSaved(true); setAmount(""); setNote("");
+            setTimeout(()=>setJustSaved(false), 1500);
+            setTick(x=>x+1);
+          }catch(e){ setErrorMsg("Kunde inte spara ("+e.message+")"); }
+        }
+
+        // list helpers
+        const monthOptions = useMemo(()=>{
+          const set=new Set(items.map(t=>String(t.date).slice(0,7)));
+          return Array.from(set).filter(Boolean).sort().reverse();
+        },[items]);
+        useEffect(()=>{
+          if(!filters.monthChoice) return;
+          const [y,m]=filters.monthChoice.split("-").map(Number);
+          const s=new Date(y,m-1,1); const e=new Date(y,m,0);
+          setFilters({...filters,fromDate:iso(s),toDate:iso(e)});
+        },[filters.monthChoice]);
+
+        const categoryOptions = useMemo(()=>{
+          const sel=filters.selectedNames||ALL_NAMES;
+          if (sel.length===1){
+            const only=sel[0];
+            if(only==="Remember/Klarna") return ["Alla",...sharedCategories];
+            if(only==="Gemensamma klacken") return ["Alla",...klackenCategories];
+            if(only==="Camilla"||only==="Kristian") return ["Alla",...personalCategories.standard,...personalCategories.ovrigt];
+          }
+          const set=new Set(items.filter(t=>sel.includes(t.person)).map(t=>t.category));
+          return ["Alla", ...Array.from(set).sort()];
+        },[filters.selectedNames, items]);
+        useEffect(()=>{ if(!categoryOptions.includes(filters.categoryFilter)) setFilters({...filters, categoryFilter:"Alla"}); },[categoryOptions]);
+
+        const filtered = useMemo(()=> items.filter(t=>{
+          const sel=filters.selectedNames||ALL_NAMES; if(sel.length && !sel.includes(t.person)) return false;
+          if(filters.cardFilter!=="Båda" && t.card!==filters.cardFilter) return false;
+          if(filters.categoryFilter!=="Alla" && t.category!==filters.categoryFilter) return false;
+          if(filters.fromDate && t.date<filters.fromDate) return false;
+          if(filters.toDate && t.date>filters.toDate) return false;
+          return true; }), [items, filters]);
+        const totalCents = useMemo(()=>filtered.reduce((s,t)=>s+(t.amountCents||0),0),[filtered]);
+
+        // edit
+        const [editTx, setEditTx] = useState(null);
+        useEffect(()=>{ if(page!=="edit") return; const tx=items.find(x=>x.id===editId)||null; setEditTx(tx); },[page, editId, items]);
+        async function onSaveEdit(e){
+          e.preventDefault();
+          const cents=parseAmountToCents(editTx._amountStr ?? ((editTx.amountCents??0)/100).toString());
+          if(!editTx.date||!editTx.person||!editTx.category||cents===null||!editTx.card){ alert("Fyll i datum, person, kort, kategori och belopp."); return; }
+          try{ await apiPut({ ...editTx, amountCents:cents }); setPage("list"); setTick(x=>x+1); }
+          catch(e){ setErrorMsg("Kunde inte spara ändring ("+e.message+")"); }
+        }
+        async function onDelete(){ try{ await apiDelete(editId); setPage("list"); setTick(x=>x+1); } catch(e){ setErrorMsg("Kunde inte ta bort ("+e.message+")"); } }
+
+        // UI
+        return (
+          <div>
+            <header className="card" style={{position:"sticky",top:0,backdropFilter:"blur(6px)",background:"#0f172acc"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <h1 style={{fontSize:"20px",fontWeight:700}}>Kassabok</h1>
+                <span style={{fontSize:"12px",color:"#94a3b8"}}>Neon • API‑driven</span>
+              </div>
+              <nav style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginTop:"10px"}}>
+                <button className="btn" aria-pressed={page==="add"} onClick={()=>setPage("add")}>Lägg till</button>
+                <button className="btn" aria-pressed={page==="list"} onClick={()=>setPage("list")}>Se transaktioner</button>
+              </nav>
+            </header>
+
+            {errorMsg && <div className="banner" style={{marginTop:8}}>{errorMsg}</div>}
+
+            <main>
+              {page==="add" && (
+                <div className="card">
+                  <h2 style={{marginTop:0}}>Ny transaktion</h2>
+                  {justSaved && <div className="ok" style={{marginBottom:"8px"}}>Sparat!</div>}
+                  <form onSubmit={onSubmit}>
+                    <div>
+                      <div style={{marginBottom:6}}>Kort</div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
+                        {["SAS Mastercard","AMEX SAS"].map(k=>(
+                          <button key={k} type="button" className="btn"
+                            aria-pressed={card===k} onClick={()=>setCard(k)}>{k}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={{marginBottom:6}}>Person</div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"8px"}}>
+                        {["Camilla","Kristian","Remember/Klarna","Gemensamma klacken"].map(p=>(
+                          <button key={p} type="button" className="btn"
+                            aria-pressed={person===p} onClick={()=>{setPerson(p); setCategory("");}}>
+                            {p}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <label>Datum
+                      <input type="date" value={date} onChange={e=>setDate(e.target.value)} />
+                    </label>
+
+                    <label>Belopp (SEK)
+                      <input inputMode="decimal" placeholder="t.ex. 199,00"
+                             value={amount} onChange={e=>setAmount(e.target.value)} required />
+                    </label>
+
+                    <label>Kategori
+                      <select value={category} onChange={e=>setCategory(e.target.value)} required>
+                        <option value="" disabled>Välj kategori…</option>
+                        {categories.grouped ? (
+                          (categories.groups||[]).map(g=>(
+                            <optgroup key={g.label} label={g.label}>
+                              {g.items.map(it=>
+                                <option key={it} value={it}>{it}</option>
+                              )}
+                            </optgroup>
+                          ))
+                        ) : (
+                          (categories.items||[]).map(it=>
+                            <option key={it} value={it}>{it}</option>
+                          )
+                        )}
+                      </select>
+                    </label>
+
+                    <label>Anteckning
+                      <textarea rows="3" value={note} onChange={e=>setNote(e.target.value)} />
+                    </label>
+
+                    <div style={{marginTop:"10px"}}>
+                      <button className="btn primary">Spara transaktion</button>
+                    </div>
+                  </form>
+                </div>
+              )}
+
+              {page==="list" && (
+                <div className="card">
+                  <h2 style={{marginTop:0}}>Transaktioner</h2>
+
+                  <div className="card" style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div>Summa ({filtered.length})</div>
+                    <div style={{fontWeight:800}}>{formatKr(totalCents)} kr</div>
+                  </div>
+
+                  <div className="card filters">
+                    <div className="row">
+                      <div style={{marginBottom:6}}>Person</div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"8px"}}>
+                        {ALL_NAMES.map(n => {
+                          const active = (filters.selectedNames||[]).includes(n);
+                          const onClick = () => {
+                            const cur = filters.selectedNames || ALL_NAMES.slice();
+                            const isOnlyOne = cur.length === 1 && cur[0] === n;
+                            let next;
+                            if (active) next = isOnlyOne ? cur : cur.filter(x => x !== n);
+                            else next = [...cur, n];
+                            setFilters({ ...filters, selectedNames: next });
+                          };
+                          return (
+                            <button key={n} type="button" className="btn" aria-pressed={active} onClick={onClick}>{n}</button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="row">
+                      <div style={{marginBottom:6}}>Kort</div>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"8px"}}>
+                        {["Båda","SAS Mastercard","AMEX SAS"].map(k=>(
+                          <button key={k} type="button" className="btn"
+                            aria-pressed={filters.cardFilter===k}
+                            onClick={()=>setFilters({...filters, cardFilter:k})}>{k}</button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="row" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
+                      <label>Från datum
+                        <input type="date" value={filters.fromDate} onChange={e=>setFilters({...filters, fromDate:e.target.value})}/>
+                      </label>
+                      <label>Till datum
+                        <input type="date" value={filters.toDate} onChange={e=>setFilters({...filters, toDate:e.target.value})}/>
+                      </label>
+                    </div>
+
+                    <div className="row" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
+                      <label>Välj månad
+                        <select value={filters.monthChoice} onChange={e=>setFilters({...filters, monthChoice:e.target.value})}>
+                          <option value="">—</option>
+                          {monthOptions.map(ym=>
+                            <option key={ym} value={ym}>{ym}</option>
+                          )}
+                        </select>
+                      </label>
+                      <label>Kategori
+                        <select value={filters.categoryFilter} onChange={e=>setFilters({...filters, categoryFilter:e.target.value})}>
+                          {["Alla", ...categoryOptions].map(c=>
+                            <option key={c} value={c}>{c}</option>
+                          )}
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+
+                  {filtered.length===0 ? (
+                    <p style={{color:"#94a3b8"}}>Inga transaktioner för valda filter.</p>
+                  ) : (
+                    <table>
+                      <thead><tr>
+                        <th>Datum</th><th>Person</th><th>Kort</th><th>Kategori</th><th>Belopp</th><th>Not</th><th></th>
+                      </tr></thead>
+                      <tbody>
+                        {filtered.map(t=>(
+                          <tr key={t.id}>
+                            <td>{t.date}</td><td>{t.person}</td><td>{t.card||"—"}</td>
+                            <td>{t.category}</td><td>{formatKr(t.amountCents ?? 0)} kr</td><td>{t.note||""}</td>
+                            <td><button className="btn" onClick={()=>{setEditId(t.id); setPage("edit");}}>Ändra</button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {page==="edit" && editTx && (
+                <div className="card">
+                  <h2 style={{marginTop:0}}>Ändra transaktion</h2>
+                  <form onSubmit={onSaveEdit}>
+                    <label>Datum
+                      <input type="date" value={editTx.date} onChange={e=>setEditTx({...editTx, date:e.target.value})} />
+                    </label>
+                    <label>Person
+                      <select value={editTx.person} onChange={e=>setEditTx({...editTx, person:e.target.value})}>
+                        {["Camilla","Kristian","Remember/Klarna","Gemensamma klacken"].map(p=>
+                          <option key={p} value={p}>{p}</option>
+                        )}
+                      </select>
+                    </label>
+                    <label>Kort
+                      <select value={editTx.card||""} onChange={e=>setEditTx({...editTx, card:e.target.value})}>
+                        {["SAS Mastercard","AMEX SAS"].map(k=>
+                          <option key={k} value={k}>{k}</option>
+                        )}
+                      </select>
+                    </label>
+                    <label>Kategori
+                      <input value={editTx.category} onChange={e=>setEditTx({...editTx, category:e.target.value})}/>
+                    </label>
+                    <label>Belopp (SEK)
+                      <input inputMode="decimal"
+                             value={editTx._amountStr ?? ((editTx.amountCents ?? 0)/100).toString().replace(".",",")}
+                             onChange={e=>setEditTx({...editTx, _amountStr:e.target.value})}/>
+                    </label>
+                    <label>Anteckning
+                      <textarea rows="3" value={editTx.note||""} onChange={e=>setEditTx({...editTx, note:e.target.value})}/>
+                    </label>
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:"10px"}}>
+                      <button className="btn primary">Spara</button>
+                      <button type="button" className="btn" onClick={()=>setPage("list")}>Avbryt</button>
+                      <button type="button" className="btn" style={{borderColor:"#b91c1c",color:"#fecaca"}} onClick={onDelete}>Ta bort</button>
+                    </div>
+                  </form>
+                </div>
+              )}
+            </main>
+          </div>
+        );
+      }
+
+      // ---- Mount (säker mot olika React DOM-versioner) ----
+      function safeMount(){
+        const container = document.getElementById("root");
+        if (!container) return console.error("root saknas");
+        if (ReactDOM.createRoot) ReactDOM.createRoot(container).render(<App />);
+        else if (ReactDOM.render) ReactDOM.render(<App />, container);
+        else container.innerHTML = '<p class="err">Kunde inte montera appen (ReactDOM saknas)</p>';
+      }
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", safeMount);
+      else safeMount();
+    </script>
+  </body>
+</html>
