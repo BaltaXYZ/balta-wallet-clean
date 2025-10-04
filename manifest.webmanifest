@@ -1,6 +1,6 @@
 {
   "name": "Balta Wallet",
-  "short_name": "Balta",
+  "short_name": "Balta Wallet",
   "start_url": "/react_v3.html",
   "scope": "/",
   "display": "standalone",
